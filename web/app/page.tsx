@@ -1,6 +1,8 @@
 "use client"
 
 import {
+  Apple,
+  BadgeCheck,
   Bell,
   CalendarDays,
   Car,
@@ -13,16 +15,30 @@ import {
   Gauge,
   Heart,
   Inbox,
+  IdCard,
+  LifeBuoy,
+  LockKeyhole,
   MapPin,
   MessageCircle,
   Moon,
+  Phone,
+  Receipt,
+  Route,
   Search,
+  Send,
   Settings,
+  ShieldAlert,
   ShieldCheck,
+  Siren,
+  SlidersHorizontal,
+  Smartphone,
   Star,
   Ticket,
+  Trash2,
+  TriangleAlert,
   UserRound,
   Users,
+  Wallet,
   X,
 } from "lucide-react"
 import { type ElementType, type FormEvent, useMemo, useState } from "react"
@@ -31,15 +47,15 @@ import {
   conversations as seedConversations,
   currentUserId,
   popularRoutes,
-  reviews,
+  reviews as seedReviews,
   rides as seedRides,
   users,
   vehicles,
   bookings as seedBookings,
 } from "@/lib/mock-data"
-import type { Booking, BookingStatus, Conversation, PaymentStatus, Ride } from "@/lib/types"
+import type { Booking, BookingStatus, Conversation, PaymentStatus, Review, Ride } from "@/lib/types"
 
-type Tab = "search" | "trips" | "drive" | "inbox" | "profile"
+type Tab = "search" | "trips" | "drive" | "inbox" | "safety" | "profile" | "settings"
 type ThemeChoice = "system" | "light" | "dark"
 
 type SearchState = {
@@ -67,11 +83,15 @@ const navItems: { id: Tab; label: string; icon: ElementType }[] = [
   { id: "trips", label: "Trips", icon: Ticket },
   { id: "drive", label: "Drive", icon: Car },
   { id: "inbox", label: "Inbox", icon: Inbox },
+  { id: "safety", label: "Safety", icon: ShieldAlert },
   { id: "profile", label: "Profile", icon: UserRound },
+  { id: "settings", label: "Settings", icon: Settings },
 ]
 
 export default function ShotgunWebApp() {
   const [activeTab, setActiveTab] = useState<Tab>("search")
+  const [isSignedIn, setIsSignedIn] = useState(false)
+  const [authMode, setAuthMode] = useState<"apple" | "demo">("demo")
   const [searchState, setSearchState] = useState<SearchState>({
     origin: "New York, NY",
     destination: "Newport, RI",
@@ -81,7 +101,10 @@ export default function ShotgunWebApp() {
   const [rides, setRides] = useState<Ride[]>(seedRides)
   const [bookings, setBookings] = useState<Booking[]>(seedBookings)
   const [conversations, setConversations] = useState<Conversation[]>(seedConversations)
+  const [reviews, setReviews] = useState<Review[]>(seedReviews)
+  const [reports, setReports] = useState<string[]>([])
   const [selectedRideId, setSelectedRideId] = useState<string>("nyc-newport")
+  const [checkoutRide, setCheckoutRide] = useState<Ride | null>(null)
   const [bookingSeats, setBookingSeats] = useState(1)
   const [savedRideIds, setSavedRideIds] = useState<string[]>(["nyc-newport"])
   const [quietMode, setQuietMode] = useState(false)
@@ -102,6 +125,18 @@ export default function ShotgunWebApp() {
     })
   }, [rides, searchState])
 
+  function signIn(mode: "apple" | "demo") {
+    setAuthMode(mode)
+    setIsSignedIn(true)
+    setNotice(mode === "apple" ? "Signed in with Apple placeholder." : "Demo mode ready.")
+  }
+
+  function signOut() {
+    setIsSignedIn(false)
+    setActiveTab("search")
+    setNotice("")
+  }
+
   function bookRide(ride: Ride) {
     if (bookingSeats < 1 || bookingSeats > ride.seatsAvailable) return
 
@@ -115,7 +150,7 @@ export default function ShotgunWebApp() {
       status: bookingStatus,
       payment: {
         id: `payment-${Date.now()}`,
-        amount: ride.price * bookingSeats,
+        amount: ride.price * bookingSeats + serviceFee(ride.price * bookingSeats),
         status: paymentStatus,
         note: ride.manualApproval
           ? "Stripe authorization held until driver approval."
@@ -157,6 +192,7 @@ export default function ShotgunWebApp() {
     ])
     setDriverViewUserId(ride.driverId)
     setNotice(`${userById(ride.driverId).firstName}'s driver dashboard now shows this booking.`)
+    setCheckoutRide(null)
     setActiveTab("trips")
   }
 
@@ -232,6 +268,101 @@ export default function ShotgunWebApp() {
     )
   }
 
+  function completeBooking(bookingId: string) {
+    const booking = bookings.find((item) => item.id === bookingId)
+    if (!booking) return
+    setBookings((current) =>
+      current.map((item) => (item.id === bookingId ? { ...item, status: "completed" } : item)),
+    )
+    setNotice("Trip marked completed. Reviews are now available.")
+  }
+
+  function addReview(bookingId: string, rating: number, body: string) {
+    const booking = bookings.find((item) => item.id === bookingId)
+    const ride = booking ? rides.find((item) => item.id === booking.rideId) : undefined
+    if (!booking || !ride || !body.trim()) return
+    const review: Review = {
+      id: `review-${bookingId}-${Date.now()}`,
+      authorId: currentUserId,
+      subjectId: ride.driverId,
+      rating,
+      body: body.trim(),
+    }
+    setReviews((current) => [review, ...current])
+    setNotice("Review posted.")
+  }
+
+  function sendMessage(conversationId: string, body: string) {
+    if (!body.trim()) return
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              messages: [
+                ...conversation.messages,
+                {
+                  id: `message-${Date.now()}`,
+                  senderId: currentUserId,
+                  body: body.trim(),
+                  sentAt: "Now",
+                },
+              ],
+            }
+          : conversation,
+      ),
+    )
+  }
+
+  function cancelRide(rideId: string) {
+    setRides((current) =>
+      current.map((ride) => (ride.id === rideId ? { ...ride, status: "canceled", seatsAvailable: 0 } : ride)),
+    )
+    setBookings((current) =>
+      current.map((booking) =>
+        booking.rideId === rideId && (booking.status === "pending" || booking.status === "confirmed")
+          ? {
+              ...booking,
+              status: "canceled",
+              payment: {
+                ...booking.payment,
+                status: booking.payment.status === "authorized" ? "voided" : "refunded",
+                note: booking.payment.status === "authorized" ? "Authorization voided." : "Refund recorded.",
+              },
+            }
+          : booking,
+      ),
+    )
+    setNotice("Ride canceled and active bookings updated.")
+  }
+
+  function completeRide(rideId: string) {
+    setRides((current) => current.map((ride) => (ride.id === rideId ? { ...ride, status: "completed" } : ride)))
+    setBookings((current) =>
+      current.map((booking) =>
+        booking.rideId === rideId && booking.status === "confirmed" ? { ...booking, status: "completed" } : booking,
+      ),
+    )
+    setNotice("Ride completed. Riders can now review.")
+  }
+
+  function adjustRidePrice(rideId: string, amount: number) {
+    setRides((current) =>
+      current.map((ride) => (ride.id === rideId ? { ...ride, price: Math.max(12, ride.price + amount) } : ride)),
+    )
+    setNotice("Listing price updated.")
+  }
+
+  function fileReport(summary: string) {
+    if (!summary.trim()) return
+    setReports((current) => [summary.trim(), ...current])
+    setNotice("Report saved in demo mode.")
+  }
+
+  if (!isSignedIn) {
+    return <AuthView theme={theme} onSignIn={signIn} />
+  }
+
   return (
     <main className="appShell" data-theme={theme}>
       <aside className="sidebar" aria-label="Shotgun navigation">
@@ -279,13 +410,14 @@ export default function ShotgunWebApp() {
             setSelectedRideId={setSelectedRideId}
             bookingSeats={bookingSeats}
             setBookingSeats={setBookingSeats}
-            onBook={bookRide}
+            onBook={setCheckoutRide}
+            onOpenSafety={() => setActiveTab("safety")}
             savedRideIds={savedRideIds}
             setSavedRideIds={setSavedRideIds}
           />
         )}
         {activeTab === "trips" && (
-          <TripsView bookings={bookings} rides={rides} onCancel={cancelBooking} />
+          <TripsView bookings={bookings} rides={rides} reviews={reviews} onCancel={cancelBooking} onComplete={completeBooking} onReview={addReview} />
         )}
         {activeTab === "drive" && (
           <DriveView
@@ -293,20 +425,44 @@ export default function ShotgunWebApp() {
             rides={rides}
             driverUserId={driverViewUserId}
             onAccept={acceptBooking}
+            onAdjustPrice={adjustRidePrice}
+            onCancelRide={cancelRide}
+            onCompleteRide={completeRide}
             onCreateRide={createRideListing}
             onDecline={cancelBooking}
             onShowMyDashboard={() => setDriverViewUserId(currentUserId)}
           />
         )}
-        {activeTab === "inbox" && <InboxView conversations={conversations} rides={rides} />}
+        {activeTab === "inbox" && <InboxView conversations={conversations} rides={rides} onSendMessage={sendMessage} />}
+        {activeTab === "safety" && <SafetyView reports={reports} onReport={fileReport} />}
         {activeTab === "profile" && (
           <ProfileView
+            authMode={authMode}
             quietMode={quietMode}
+            reviews={reviews}
             setQuietMode={setQuietMode}
             notifications={notifications}
             setNotifications={setNotifications}
             theme={theme}
             setTheme={setTheme}
+          />
+        )}
+        {activeTab === "settings" && (
+          <SettingsView
+            authMode={authMode}
+            notifications={notifications}
+            onSignOut={signOut}
+            setNotifications={setNotifications}
+            setTheme={setTheme}
+            theme={theme}
+          />
+        )}
+        {checkoutRide && (
+          <CheckoutSheet
+            ride={checkoutRide}
+            seats={bookingSeats}
+            onClose={() => setCheckoutRide(null)}
+            onConfirm={() => bookRide(checkoutRide)}
           />
         )}
         {notice && (
@@ -315,6 +471,48 @@ export default function ShotgunWebApp() {
             {notice}
           </button>
         )}
+      </section>
+    </main>
+  )
+}
+
+function AuthView({ theme, onSignIn }: { theme: ThemeChoice; onSignIn: (mode: "apple" | "demo") => void }) {
+  return (
+    <main className="authShell" data-theme={theme}>
+      <section className="authHero">
+        <div className="brandMark">
+          <div className="brandIcon">
+            <Car size={24} />
+          </div>
+          <div>
+            <strong>Shotgun</strong>
+            <span>Northeast rides</span>
+          </div>
+        </div>
+        <div className="authCopy">
+          <p>Shared rides between Northeast cities.</p>
+          <h1>Book the empty seat, skip the train scramble.</h1>
+        </div>
+        <div className="authMap">
+          <CorridorMap origin="New York, NY" destination="Newport, RI" />
+        </div>
+      </section>
+      <section className="authPanel">
+        <BadgeCheck size={26} />
+        <h2>Start with a verified profile</h2>
+        <p>Sign in with Apple is the intended production path. Demo mode keeps this MVP fully clickable while auth is wired to Supabase.</p>
+        <button className="primaryAction" type="button" onClick={() => onSignIn("apple")}>
+          <Apple size={18} />
+          Sign in with Apple
+        </button>
+        <button className="secondaryAction" type="button" onClick={() => onSignIn("demo")}>
+          Use demo mode
+        </button>
+        <div className="authChecklist">
+          <span><LockKeyhole size={15} /> Private relay-ready</span>
+          <span><Smartphone size={15} /> Phone verification placeholder</span>
+          <span><ShieldCheck size={15} /> Trust and safety profile</span>
+        </div>
       </section>
     </main>
   )
@@ -329,6 +527,7 @@ function SearchView({
   bookingSeats,
   setBookingSeats,
   onBook,
+  onOpenSafety,
   savedRideIds,
   setSavedRideIds,
 }: {
@@ -340,6 +539,7 @@ function SearchView({
   bookingSeats: number
   setBookingSeats: (seats: number) => void
   onBook: (ride: Ride) => void
+  onOpenSafety: () => void
   savedRideIds: string[]
   setSavedRideIds: (ids: string[]) => void
 }) {
@@ -393,26 +593,30 @@ function SearchView({
         </div>
 
         <div className="rideList">
-          {results.map((ride) => (
-            <RideCard
-              key={ride.id}
-              ride={ride}
-              selected={ride.id === selectedRide.id}
-              saved={savedRideIds.includes(ride.id)}
-              onSelect={() => setSelectedRideId(ride.id)}
-              onSave={() =>
-                setSavedRideIds(
-                  savedRideIds.includes(ride.id)
-                    ? savedRideIds.filter((id) => id !== ride.id)
-                    : [...savedRideIds, ride.id],
-                )
-              }
-            />
-          ))}
+          {results.length === 0 ? (
+            <EmptyState icon={Search} title="No rides found" body="Try another popular route or reduce the seat count." />
+          ) : (
+            results.map((ride) => (
+              <RideCard
+                key={ride.id}
+                ride={ride}
+                selected={ride.id === selectedRide.id}
+                saved={savedRideIds.includes(ride.id)}
+                onSelect={() => setSelectedRideId(ride.id)}
+                onSave={() =>
+                  setSavedRideIds(
+                    savedRideIds.includes(ride.id)
+                      ? savedRideIds.filter((id) => id !== ride.id)
+                      : [...savedRideIds, ride.id],
+                  )
+                }
+              />
+            ))
+          )}
         </div>
       </section>
 
-      <RideDetail ride={selectedRide} bookingSeats={bookingSeats} setBookingSeats={setBookingSeats} onBook={onBook} />
+      <RideDetail ride={selectedRide} bookingSeats={bookingSeats} setBookingSeats={setBookingSeats} onBook={onBook} onOpenSafety={onOpenSafety} />
     </div>
   )
 }
@@ -463,11 +667,13 @@ function RideDetail({
   bookingSeats,
   setBookingSeats,
   onBook,
+  onOpenSafety,
 }: {
   ride: Ride
   bookingSeats: number
   setBookingSeats: (seats: number) => void
   onBook: (ride: Ride) => void
+  onOpenSafety: () => void
 }) {
   const driver = userById(ride.driverId)
   const vehicle = vehicleById(ride.vehicleId)
@@ -521,14 +727,91 @@ function RideDetail({
       </div>
 
       <button className="primaryAction" type="button" onClick={() => onBook(ride)}>
-        {ride.manualApproval ? "Request booking" : "Book seat"}
+        {ride.manualApproval ? "Request booking" : "Continue to checkout"}
         <ChevronRight size={18} />
+      </button>
+      <button className="secondaryAction" type="button" onClick={onOpenSafety}>
+        <ShieldAlert size={16} />
+        Safety and reports
       </button>
     </aside>
   )
 }
 
-function TripsView({ bookings, rides, onCancel }: { bookings: Booking[]; rides: Ride[]; onCancel: (id: string) => void }) {
+function CheckoutSheet({
+  ride,
+  seats,
+  onClose,
+  onConfirm,
+}: {
+  ride: Ride
+  seats: number
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const driver = userById(ride.driverId)
+  const subtotal = ride.price * seats
+  const fee = serviceFee(subtotal)
+  const total = subtotal + fee
+
+  return (
+    <div className="sheetOverlay" role="presentation">
+      <section className="checkoutSheet" aria-label="Booking checkout">
+        <div className="sheetHeader">
+          <div>
+            <p>Secure checkout</p>
+            <h2>{shortCity(ride.origin)} to {shortCity(ride.destination)}</h2>
+          </div>
+          <button className="iconButton" type="button" onClick={onClose} aria-label="Close checkout">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="checkoutDriver">
+          <Avatar userId={driver.id} />
+          <div>
+            <strong>{driver.name}</strong>
+            <span>{ride.manualApproval ? "Driver approval required" : "Instant confirmation"}</span>
+          </div>
+        </div>
+        <div className="priceBreakdown">
+          <span>{seats} seat{seats === 1 ? "" : "s"} x ${ride.price}</span>
+          <strong>${subtotal}</strong>
+          <span>Shotgun service fee</span>
+          <strong>${fee}</strong>
+          <span>Total today</span>
+          <strong>${total}</strong>
+        </div>
+        <div className="paymentChoice">
+          <Wallet size={18} />
+          <div>
+            <strong>Payment stub</strong>
+            <span>Stripe Connect or Apple Pay will capture this server-side later.</span>
+          </div>
+        </div>
+        <button className="primaryAction" type="button" onClick={onConfirm}>
+          <Receipt size={18} />
+          {ride.manualApproval ? "Authorize payment and request" : "Pay and book"}
+        </button>
+      </section>
+    </div>
+  )
+}
+
+function TripsView({
+  bookings,
+  rides,
+  reviews,
+  onCancel,
+  onComplete,
+  onReview,
+}: {
+  bookings: Booking[]
+  rides: Ride[]
+  reviews: Review[]
+  onCancel: (id: string) => void
+  onComplete: (id: string) => void
+  onReview: (bookingId: string, rating: number, body: string) => void
+}) {
   const userBookings = bookings.filter((booking) => booking.riderId === currentUserId)
   return (
     <section className="contentStack">
@@ -541,6 +824,7 @@ function TripsView({ bookings, rides, onCancel }: { bookings: Booking[]; rides: 
             const ride = rides.find((item) => item.id === booking.rideId)
             if (!ride) return null
             const driver = userById(ride.driverId)
+            const reviewed = reviews.some((review) => review.authorId === currentUserId && review.id.includes(booking.id))
             return (
               <article className="tripCard" key={booking.id}>
                 <Status status={booking.status} />
@@ -555,10 +839,19 @@ function TripsView({ bookings, rides, onCancel }: { bookings: Booking[]; rides: 
                   <span>{booking.payment.status} · ${booking.payment.amount}</span>
                 </div>
                 {booking.status === "pending" || booking.status === "confirmed" ? (
-                  <button className="secondaryAction" type="button" onClick={() => onCancel(booking.id)}>
-                    <X size={16} /> Cancel booking
-                  </button>
+                  <div className="actionRow">
+                    <button className="secondaryAction" type="button" onClick={() => onCancel(booking.id)}>
+                      <X size={16} /> Cancel booking
+                    </button>
+                    {booking.status === "confirmed" && (
+                      <button className="primaryAction compact" type="button" onClick={() => onComplete(booking.id)}>
+                        <Check size={16} /> Complete
+                      </button>
+                    )}
+                  </div>
                 ) : null}
+                {booking.status === "completed" && !reviewed && <ReviewForm bookingId={booking.id} onReview={onReview} />}
+                {booking.status === "completed" && reviewed && <span className="verified"><Star size={15} /> Reviewed</span>}
               </article>
             )
           })}
@@ -568,11 +861,47 @@ function TripsView({ bookings, rides, onCancel }: { bookings: Booking[]; rides: 
   )
 }
 
+function ReviewForm({
+  bookingId,
+  onReview,
+}: {
+  bookingId: string
+  onReview: (bookingId: string, rating: number, body: string) => void
+}) {
+  const [rating, setRating] = useState(5)
+  const [body, setBody] = useState("Great ride, clear pickup, would book again.")
+
+  return (
+    <form
+      className="reviewForm"
+      onSubmit={(event) => {
+        event.preventDefault()
+        onReview(bookingId, rating, body)
+      }}
+    >
+      <div className="starPicker" aria-label="Review rating">
+        {[1, 2, 3, 4, 5].map((value) => (
+          <button className={value <= rating ? "active" : ""} key={value} type="button" onClick={() => setRating(value)}>
+            <Star size={16} fill="currentColor" />
+          </button>
+        ))}
+      </div>
+      <textarea value={body} onChange={(event) => setBody(event.target.value)} />
+      <button className="primaryAction compact" type="submit">
+        Post review
+      </button>
+    </form>
+  )
+}
+
 function DriveView({
   bookings,
   rides,
   driverUserId,
   onAccept,
+  onAdjustPrice,
+  onCancelRide,
+  onCompleteRide,
   onCreateRide,
   onDecline,
   onShowMyDashboard,
@@ -581,6 +910,9 @@ function DriveView({
   rides: Ride[]
   driverUserId: string
   onAccept: (id: string) => void
+  onAdjustPrice: (rideId: string, amount: number) => void
+  onCancelRide: (rideId: string) => void
+  onCompleteRide: (rideId: string) => void
   onCreateRide: (draft: ListingDraft) => void
   onDecline: (id: string) => void
   onShowMyDashboard: () => void
@@ -611,22 +943,42 @@ function DriveView({
         <Metric icon={Gauge} label="Seats open" value={`${ownRides.reduce((total, ride) => total + ride.seatsAvailable, 0)}`} />
       </div>
       {driverUserId === currentUserId && <CreateRideForm onCreateRide={onCreateRide} />}
-      <div className="gridCards">
-        {ownRides.map((ride) => (
+      {ownRides.length === 0 ? (
+        <EmptyState icon={Route} title="No driver listings" body="Create a listing to start filling empty seats." />
+      ) : (
+        <div className="gridCards">
+          {ownRides.map((ride) => (
           <article className="tripCard" key={ride.id}>
             <Status status={ride.status} />
             <h2>{shortCity(ride.origin)} to {shortCity(ride.destination)}</h2>
-            <p>{ride.departureTime} · {ride.seatsAvailable}/{ride.totalSeats} open</p>
+            <p>{ride.departureTime} · {ride.seatsAvailable}/{ride.totalSeats} open · ${ride.price}/seat</p>
             <div className="paymentLine">
               <Car size={16} />
               <span>{vehicleById(ride.vehicleId).color} {vehicleById(ride.vehicleId).make} {vehicleById(ride.vehicleId).model}</span>
             </div>
+            {driverUserId === currentUserId && ride.status === "active" && (
+              <div className="actionRow">
+                <button className="secondaryAction" type="button" onClick={() => onAdjustPrice(ride.id, -2)}>
+                  <SlidersHorizontal size={16} /> Edit price
+                </button>
+                <button className="secondaryAction danger" type="button" onClick={() => onCancelRide(ride.id)}>
+                  <Trash2 size={16} /> Cancel ride
+                </button>
+                <button className="primaryAction compact" type="button" onClick={() => onCompleteRide(ride.id)}>
+                  <Check size={16} /> Complete
+                </button>
+              </div>
+            )}
           </article>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
       <h2 className="sectionTitle">Booking activity</h2>
-      <div className="gridCards">
-        {driverBookings.map((booking) => {
+      {driverBookings.length === 0 ? (
+        <EmptyState icon={Users} title="No booking activity yet" body="Accepted riders and pending requests will appear here." />
+      ) : (
+        <div className="gridCards">
+          {driverBookings.map((booking) => {
           const ride = rides.find((item) => item.id === booking.rideId)
           if (!ride) return null
           const rider = userById(booking.riderId)
@@ -654,8 +1006,9 @@ function DriveView({
               )}
             </article>
           )
-        })}
-      </div>
+          })}
+        </div>
+      )}
     </section>
   )
 }
@@ -772,8 +1125,17 @@ function CreateRideForm({ onCreateRide }: { onCreateRide: (draft: ListingDraft) 
   )
 }
 
-function InboxView({ conversations, rides }: { conversations: Conversation[]; rides: Ride[] }) {
+function InboxView({
+  conversations,
+  rides,
+  onSendMessage,
+}: {
+  conversations: Conversation[]
+  rides: Ride[]
+  onSendMessage: (conversationId: string, body: string) => void
+}) {
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "")
+  const [draft, setDraft] = useState("On my way. What is the easiest pickup landmark?")
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? conversations[0]
 
   return (
@@ -815,10 +1177,17 @@ function InboxView({ conversations, rides }: { conversations: Conversation[]; ri
                 </div>
               ))}
             </div>
-            <div className="composer">
-              <span>Message after booking</span>
-              <button type="button"><MessageCircle size={16} /> Send</button>
-            </div>
+            <form
+              className="composer"
+              onSubmit={(event) => {
+                event.preventDefault()
+                onSendMessage(selected.id, draft)
+                setDraft("")
+              }}
+            >
+              <input aria-label="Message" value={draft} onChange={(event) => setDraft(event.target.value)} />
+              <button type="submit"><Send size={16} /> Send</button>
+            </form>
           </>
         ) : (
           <EmptyState icon={Inbox} title="No messages" body="Book a ride and the conversation will appear here." />
@@ -829,14 +1198,18 @@ function InboxView({ conversations, rides }: { conversations: Conversation[]; ri
 }
 
 function ProfileView({
+  authMode,
   quietMode,
+  reviews,
   setQuietMode,
   notifications,
   setNotifications,
   theme,
   setTheme,
 }: {
+  authMode: "apple" | "demo"
   quietMode: boolean
+  reviews: Review[]
   setQuietMode: (value: boolean) => void
   notifications: boolean
   setNotifications: (value: boolean) => void
@@ -861,27 +1234,15 @@ function ProfileView({
         <Metric icon={Car} label="Driver" value="Ready" />
         <Metric icon={Star} label="Rating" value={user.rating.toFixed(2)} />
       </div>
+      <div className="profileDetails">
+        <InfoRow icon={Phone} title="Phone" body={`${user.phone} · verification placeholder active`} />
+        <InfoRow icon={IdCard} title="Verification" body={authMode === "apple" ? "Apple sign-in placeholder connected." : "Demo profile using production auth abstraction."} />
+        <InfoRow icon={ShieldCheck} title="Trust" body="Verified badge, review history, and report flow are ready to connect to Supabase." />
+      </div>
       <div className="settingsGrid">
         <ToggleRow icon={Bell} label="Ride notifications" enabled={notifications} onToggle={() => setNotifications(!notifications)} />
         <ToggleRow icon={Moon} label="Quiet ride default" enabled={quietMode} onToggle={() => setQuietMode(!quietMode)} />
-        <div className="themeControl">
-          <div>
-            <Settings size={18} />
-            <span>Theme</span>
-          </div>
-          <div className="themeOptions">
-            {(["system", "light", "dark"] as ThemeChoice[]).map((option) => (
-              <button
-                className={theme === option ? "active" : ""}
-                key={option}
-                type="button"
-                onClick={() => setTheme(option)}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        </div>
+        <ThemeControl theme={theme} setTheme={setTheme} />
       </div>
       <h2 className="sectionTitle">Recent reviews</h2>
       <div className="gridCards">
@@ -893,6 +1254,135 @@ function ProfileView({
         ))}
       </div>
     </section>
+  )
+}
+
+function SafetyView({ reports, onReport }: { reports: string[]; onReport: (summary: string) => void }) {
+  const [summary, setSummary] = useState("Pickup was unclear and I want the safety team to review.")
+
+  return (
+    <section className="contentStack">
+      <Header eyebrow="Safety" title="Trust for corridor rides" />
+      <div className="safetyGrid">
+        <div className="safetyPanel">
+          <Siren size={24} />
+          <h2>Emergency info</h2>
+          <p>Call local emergency services first. Share trip details, pickup notes, and driver profile with a trusted contact before departure.</p>
+          <button className="primaryAction compact" type="button">
+            <Phone size={16} /> Emergency card
+          </button>
+        </div>
+        <div className="safetyPanel">
+          <ShieldCheck size={24} />
+          <h2>Verification stack</h2>
+          <p>Phone verification, government ID, profile history, vehicle details, and post-ride reviews are modeled for Supabase policies.</p>
+        </div>
+        <div className="safetyPanel">
+          <TriangleAlert size={24} />
+          <h2>Safety tips</h2>
+          <p>Meet in public pickup zones, confirm the plate and driver name, keep payments in-app, and use reports for anything that feels off.</p>
+        </div>
+      </div>
+      <form
+        className="reportForm"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onReport(summary)
+          setSummary("")
+        }}
+      >
+        <div>
+          <h2 className="sectionTitle">Report a user or ride</h2>
+          <p>Demo reports stay local for now, but this is the shape of the moderation flow.</p>
+        </div>
+        <textarea value={summary} onChange={(event) => setSummary(event.target.value)} />
+        <button className="primaryAction compact" type="submit">
+          <ShieldAlert size={16} />
+          Submit report
+        </button>
+      </form>
+      <div className="gridCards">
+        {reports.length === 0 ? (
+          <EmptyState icon={LifeBuoy} title="No reports filed" body="Submitted safety reports will appear here in demo mode." />
+        ) : (
+          reports.map((report, index) => (
+            <article className="tripCard" key={`${report}-${index}`}>
+              <Status status="received" />
+              <p>{report}</p>
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  )
+}
+
+function SettingsView({
+  authMode,
+  notifications,
+  onSignOut,
+  setNotifications,
+  setTheme,
+  theme,
+}: {
+  authMode: "apple" | "demo"
+  notifications: boolean
+  onSignOut: () => void
+  setNotifications: (value: boolean) => void
+  setTheme: (value: ThemeChoice) => void
+  theme: ThemeChoice
+}) {
+  return (
+    <section className="contentStack">
+      <Header eyebrow="Settings" title="App controls and integrations" />
+      <div className="settingsGrid">
+        <ThemeControl theme={theme} setTheme={setTheme} />
+        <ToggleRow icon={Bell} label="Push notifications" enabled={notifications} onToggle={() => setNotifications(!notifications)} />
+        <div className="integrationCard">
+          <LockKeyhole size={20} />
+          <strong>Authentication</strong>
+          <span>{authMode === "apple" ? "Apple sign-in placeholder active." : "Demo mode active."}</span>
+        </div>
+        <div className="integrationCard">
+          <Wallet size={20} />
+          <strong>Payments</strong>
+          <span>Stripe Connect or Apple Pay can replace the local checkout stub.</span>
+        </div>
+        <div className="integrationCard">
+          <BadgeCheck size={20} />
+          <strong>Supabase</strong>
+          <span>Client env hook is ready. Auth, RLS, and realtime can be connected next.</span>
+        </div>
+        <button className="toggleRow danger" type="button" onClick={onSignOut}>
+          <X size={18} />
+          <span>Sign out</span>
+          <strong>Demo</strong>
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function ThemeControl({ theme, setTheme }: { theme: ThemeChoice; setTheme: (value: ThemeChoice) => void }) {
+  return (
+    <div className="themeControl">
+      <div>
+        <Settings size={18} />
+        <span>Theme</span>
+      </div>
+      <div className="themeOptions">
+        {(["system", "light", "dark"] as ThemeChoice[]).map((option) => (
+          <button
+            className={theme === option ? "active" : ""}
+            key={option}
+            type="button"
+            onClick={() => setTheme(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -1018,4 +1508,8 @@ function cityMatches(city: string, query: string) {
 function rideTitle(rideId: string, rides: Ride[]) {
   const ride = rides.find((item) => item.id === rideId)
   return ride ? `${shortCity(ride.origin)} to ${shortCity(ride.destination)}` : "Ride"
+}
+
+function serviceFee(subtotal: number) {
+  return Math.max(3, Math.round(subtotal * 0.08))
 }
