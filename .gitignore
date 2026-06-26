@@ -12,6 +12,15 @@ xcuserdata/
 .build/
 .swiftpm/
 
+# Web
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+web/.env.local
+web/.env.*.local
+
 # Local app/runtime state
 *.log
 *.sqlite
@@ -32,4 +41,3 @@ supabase/functions/.env.*
 
 # Stripe/Supabase generated local output
 .supabase/
-
