@@ -1,0 +1,35 @@
+.DS_Store
+
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+xcuserdata/
+*.moved-aside
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Local app/runtime state
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Supabase local state and secrets
+supabase/.branches/
+supabase/.temp/
+supabase/functions/.env
+supabase/functions/.env.*
+!supabase/functions/.env.example
+
+# Generic environment files
+.env
+.env.*
+!.env.example
+
+# Stripe/Supabase generated local output
+.supabase/
+

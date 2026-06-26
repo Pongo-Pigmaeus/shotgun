@@ -1,0 +1,47 @@
+project_id = "shotgun"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+api_url = "http://127.0.0.1:54321"
+
+[inbucket]
+enabled = true
+port = 54324
+
+[auth]
+enabled = true
+site_url = "shotgun://auth-callback"
+additional_redirect_urls = ["shotgun://auth-callback"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+[storage]
+enabled = true
+file_size_limit = "10MiB"
+
+[edge_runtime]
+enabled = true
+policy = "oneshot"
+inspector_port = 8083
+
+[functions.stripe-webhook]
+verify_jwt = false
+
