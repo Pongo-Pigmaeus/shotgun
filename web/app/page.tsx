@@ -202,7 +202,7 @@ export default function ShotgunWebApp() {
   }
 
   function liveBackendActive() {
-    return backendConfigured && backendStatus.mode === "connected"
+    return backendConfigured && (backendStatus.mode === "connected" || backendStatus.mode === "empty")
   }
 
   async function refreshLiveData() {
@@ -256,6 +256,11 @@ export default function ShotgunWebApp() {
     setActiveUserId(seedCurrentUserId)
     setAppUsers(seedUsers)
     setAppVehicles(seedVehicles)
+    setRides(seedRides)
+    setBookings(seedBookings)
+    setConversations(seedConversations)
+    setReviews(seedReviews)
+    setSavedRideIds(["nyc-newport"])
     setIsSignedIn(false)
     setActiveTab("search")
     setBackendStatus(backendUnavailableStatus())
@@ -767,7 +772,7 @@ function SearchView({
   searchState: SearchState
   setSearchState: (value: SearchState) => void
   results: Ride[]
-  selectedRide: Ride
+  selectedRide: Ride | undefined
   setSelectedRideId: (id: string) => void
   bookingSeats: number
   setBookingSeats: (seats: number) => void
@@ -833,7 +838,7 @@ function SearchView({
               <RideCard
                 key={ride.id}
                 ride={ride}
-                selected={ride.id === selectedRide.id}
+                selected={ride.id === selectedRide?.id}
                 saved={savedRideIds.includes(ride.id)}
                 onSelect={() => setSelectedRideId(ride.id)}
                 onSave={() =>
@@ -849,7 +854,13 @@ function SearchView({
         </div>
       </section>
 
-      <RideDetail ride={selectedRide} bookingSeats={bookingSeats} setBookingSeats={setBookingSeats} onBook={onBook} onOpenSafety={onOpenSafety} />
+      {selectedRide ? (
+        <RideDetail ride={selectedRide} bookingSeats={bookingSeats} setBookingSeats={setBookingSeats} onBook={onBook} onOpenSafety={onOpenSafety} />
+      ) : (
+        <section className="detailPanel">
+          <EmptyState icon={Route} title="No live rides yet" body="Create a driver listing or seed Supabase to populate this marketplace." />
+        </section>
+      )}
     </div>
   )
 }

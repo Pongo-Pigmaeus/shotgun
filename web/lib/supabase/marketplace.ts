@@ -1,9 +1,8 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js"
-import { bookings as seedBookings, conversations as seedConversations, reviews as seedReviews, rides as seedRides, users as seedUsers, vehicles as seedVehicles } from "@/lib/mock-data"
 import type { AppUser, Booking, BookingStatus, Conversation, Message, PaymentStatus, Review, Ride, RideStatus, Vehicle } from "@/lib/types"
 import { createSupabaseBrowserClient, hasSupabaseConfig } from "./client"
 
-export type BackendMode = "not_configured" | "demo" | "connected" | "error"
+export type BackendMode = "not_configured" | "demo" | "connected" | "empty" | "error"
 
 export type BackendStatus = {
   mode: BackendMode
@@ -125,7 +124,7 @@ type ReviewRow = {
 
 export function backendUnavailableStatus(): BackendStatus {
   return hasSupabaseConfig()
-    ? { mode: "demo", message: "Supabase is configured. Demo data is active until auth/schema data loads." }
+    ? { mode: "demo", message: "Supabase is configured. Local demo data is only the signed-out fallback." }
     : { mode: "not_configured", message: "Missing Supabase environment variables." }
 }
 
@@ -224,19 +223,10 @@ export async function loadMarketplaceSnapshot(user: SupabaseAuthUser): Promise<M
   const vehicles = vehiclesResult.data ?? []
   const rides = ridesResult.data ?? []
 
-  if (profiles.length === 0 || vehicles.length === 0 || rides.length === 0) {
-    return {
-      ...demoSnapshot(user.id),
-      status: {
-        mode: "connected",
-        message: "Connected to Supabase. No live marketplace seed data yet, so demo rides are showing.",
-      },
-    }
-  }
-
   const paymentsByBookingId = new Map((paymentsResult.data ?? []).filter((payment) => payment.booking_id).map((payment) => [payment.booking_id as string, payment]))
   const messagesByConversationId = groupBy(messagesResult.data ?? [], (message) => message.conversation_id)
   const participantsByConversationId = groupBy(participantsResult.data ?? [], (participant) => participant.conversation_id)
+  const liveRows = profiles.length + vehicles.length + rides.length + (bookingsResult.data?.length ?? 0) + (conversationsResult.data?.length ?? 0)
 
   return {
     currentUserId: user.id,
@@ -249,21 +239,11 @@ export async function loadMarketplaceSnapshot(user: SupabaseAuthUser): Promise<M
     ),
     reviews: (reviewsResult.data ?? []).map(mapReview),
     status: {
-      mode: "connected",
-      message: "Live Supabase session and marketplace tables are connected.",
+      mode: liveRows === 0 || rides.length === 0 ? "empty" : "connected",
+      message: rides.length === 0
+        ? "Connected to Supabase. Live marketplace rows are empty."
+        : "Live Supabase session and marketplace tables are connected.",
     },
-  }
-}
-
-function demoSnapshot(currentUserId: string): Omit<MarketplaceSnapshot, "status"> {
-  return {
-    currentUserId,
-    users: [...seedUsers],
-    vehicles: [...seedVehicles],
-    rides: [...seedRides],
-    bookings: [...seedBookings],
-    conversations: [...seedConversations],
-    reviews: [...seedReviews],
   }
 }
 
