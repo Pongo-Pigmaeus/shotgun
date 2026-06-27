@@ -41,22 +41,40 @@ import {
   Wallet,
   X,
 } from "lucide-react"
-import { type ElementType, type FormEvent, useMemo, useState } from "react"
+import { createContext, type ElementType, type FormEvent, useContext, useEffect, useMemo, useState } from "react"
 import {
   cities,
   conversations as seedConversations,
-  currentUserId,
+  currentUserId as seedCurrentUserId,
   popularRoutes,
   reviews as seedReviews,
   rides as seedRides,
-  users,
-  vehicles,
+  users as seedUsers,
+  vehicles as seedVehicles,
   bookings as seedBookings,
 } from "@/lib/mock-data"
+import { hasSupabaseConfig } from "@/lib/supabase/client"
+import {
+  approveBookingWithSupabase,
+  backendUnavailableStatus,
+  bookRideWithSupabase,
+  cancelBookingWithSupabase,
+  declineBookingWithSupabase,
+  getSupabaseUser,
+  loadMarketplaceSnapshot,
+  sendMessageWithSupabase,
+  signInDemoUser,
+  signInWithApple,
+  signOutSupabase,
+  type BackendStatus,
+  type SupabaseAuthUser,
+} from "@/lib/supabase/marketplace"
 import type { Booking, BookingStatus, Conversation, PaymentStatus, Review, Ride } from "@/lib/types"
 
 type Tab = "search" | "trips" | "drive" | "inbox" | "safety" | "profile" | "settings"
 type ThemeChoice = "system" | "light" | "dark"
+type PendingAction = "book" | "cancel" | "approve" | "decline" | "message" | null
+type MaybeAsync = void | Promise<void>
 
 type SearchState = {
   origin: string
@@ -88,10 +106,25 @@ const navItems: { id: Tab; label: string; icon: ElementType }[] = [
   { id: "settings", label: "Settings", icon: Settings },
 ]
 
+const AppDataContext = createContext({
+  currentUserId: seedCurrentUserId,
+  users: seedUsers,
+  vehicles: seedVehicles,
+})
+
+function useAppData() {
+  return useContext(AppDataContext)
+}
+
 export default function ShotgunWebApp() {
   const [activeTab, setActiveTab] = useState<Tab>("search")
+  const backendConfigured = hasSupabaseConfig()
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>(backendUnavailableStatus())
   const [isSignedIn, setIsSignedIn] = useState(false)
   const [authMode, setAuthMode] = useState<"apple" | "demo">("demo")
+  const [activeUserId, setActiveUserId] = useState(seedCurrentUserId)
+  const [appUsers, setAppUsers] = useState(seedUsers)
+  const [appVehicles, setAppVehicles] = useState(seedVehicles)
   const [searchState, setSearchState] = useState<SearchState>({
     origin: "New York, NY",
     destination: "Newport, RI",
@@ -110,8 +143,9 @@ export default function ShotgunWebApp() {
   const [quietMode, setQuietMode] = useState(false)
   const [notifications, setNotifications] = useState(true)
   const [theme, setTheme] = useState<ThemeChoice>("system")
-  const [driverViewUserId, setDriverViewUserId] = useState(currentUserId)
+  const [driverViewUserId, setDriverViewUserId] = useState(seedCurrentUserId)
   const [notice, setNotice] = useState("")
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null)
 
   const selectedRide = rides.find((ride) => ride.id === selectedRideId) ?? rides[0]
   const results = useMemo(() => {
@@ -125,27 +159,135 @@ export default function ShotgunWebApp() {
     })
   }, [rides, searchState])
 
-  function signIn(mode: "apple" | "demo") {
+  useEffect(() => {
+    let cancelled = false
+
+    async function restoreSession() {
+      if (!backendConfigured) return
+      const user = await getSupabaseUser()
+      if (!user || cancelled) return
+      await loadSupabaseData(user)
+      if (!cancelled) {
+        setIsSignedIn(true)
+        setAuthMode("apple")
+      }
+    }
+
+    void restoreSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [backendConfigured])
+
+  async function loadSupabaseData(user: SupabaseAuthUser) {
+    try {
+      const snapshot = await loadMarketplaceSnapshot(user)
+      setActiveUserId(snapshot.currentUserId)
+      setAppUsers(snapshot.users)
+      setAppVehicles(snapshot.vehicles)
+      setRides(snapshot.rides)
+      setBookings(snapshot.bookings)
+      setConversations(snapshot.conversations)
+      setReviews(snapshot.reviews)
+      setBackendStatus(snapshot.status)
+      setDriverViewUserId(snapshot.currentUserId)
+      setSelectedRideId((current) => (snapshot.rides.some((ride) => ride.id === current) ? current : snapshot.rides[0]?.id ?? current))
+    } catch (error) {
+      setBackendStatus({
+        mode: "error",
+        message: error instanceof Error ? error.message : "Supabase data could not be loaded yet.",
+      })
+    }
+  }
+
+  function liveBackendActive() {
+    return backendConfigured && backendStatus.mode === "connected"
+  }
+
+  async function refreshLiveData() {
+    const user = await getSupabaseUser()
+    if (!user) {
+      throw new Error("Sign in again before using live ride actions.")
+    }
+    await loadSupabaseData(user)
+  }
+
+  function mutationMessage(error: unknown, fallback: string) {
+    return error instanceof Error && error.message ? error.message : fallback
+  }
+
+  async function signIn(mode: "apple" | "demo") {
     setAuthMode(mode)
+    if (mode === "apple" && backendConfigured) {
+      const { error } = await signInWithApple()
+      if (error) {
+        setBackendStatus({ mode: "error", message: error.message })
+        setNotice("Apple sign-in is not configured yet. Demo mode is still available.")
+      } else {
+        setNotice("Redirecting to Apple sign-in.")
+      }
+      return
+    }
+
+    if (mode === "demo" && backendConfigured) {
+      const { user, error } = await signInDemoUser()
+      if (user) {
+        await loadSupabaseData(user)
+        setIsSignedIn(true)
+        setNotice("Supabase demo session connected.")
+        return
+      }
+      setBackendStatus({
+        mode: "demo",
+        message: error?.message ?? "Anonymous auth is not enabled. Using local demo data.",
+      })
+    }
+
+    setActiveUserId(seedCurrentUserId)
+    setAppUsers(seedUsers)
+    setAppVehicles(seedVehicles)
     setIsSignedIn(true)
     setNotice(mode === "apple" ? "Signed in with Apple placeholder." : "Demo mode ready.")
   }
 
-  function signOut() {
+  async function signOut() {
+    await signOutSupabase()
+    setActiveUserId(seedCurrentUserId)
+    setAppUsers(seedUsers)
+    setAppVehicles(seedVehicles)
     setIsSignedIn(false)
     setActiveTab("search")
+    setBackendStatus(backendUnavailableStatus())
     setNotice("")
   }
 
-  function bookRide(ride: Ride) {
+  async function bookRide(ride: Ride) {
     if (bookingSeats < 1 || bookingSeats > ride.seatsAvailable) return
+
+    if (liveBackendActive()) {
+      setPendingAction("book")
+      try {
+        await bookRideWithSupabase({ rideID: ride.id, seats: bookingSeats })
+        await refreshLiveData()
+        setDriverViewUserId(ride.driverId)
+        setNotice(`${userById(ride.driverId, appUsers).firstName}'s driver dashboard now shows this booking.`)
+        setCheckoutRide(null)
+        setActiveTab("trips")
+      } catch (error) {
+        setNotice(mutationMessage(error, "Booking could not be completed."))
+      } finally {
+        setPendingAction(null)
+      }
+      return
+    }
 
     const bookingStatus: BookingStatus = ride.manualApproval ? "pending" : "confirmed"
     const paymentStatus: PaymentStatus = ride.manualApproval ? "authorized" : "succeeded"
     const booking: Booking = {
       id: `booking-${Date.now()}`,
       rideId: ride.id,
-      riderId: currentUserId,
+      riderId: activeUserId,
       seats: bookingSeats,
       status: bookingStatus,
       payment: {
@@ -176,7 +318,7 @@ export default function ShotgunWebApp() {
         id: `conversation-${Date.now()}`,
         rideId: ride.id,
         bookingId: booking.id,
-        participantIds: [currentUserId, ride.driverId],
+        participantIds: [activeUserId, ride.driverId],
         messages: [
           {
             id: `message-${Date.now()}`,
@@ -191,16 +333,16 @@ export default function ShotgunWebApp() {
       ...current,
     ])
     setDriverViewUserId(ride.driverId)
-    setNotice(`${userById(ride.driverId).firstName}'s driver dashboard now shows this booking.`)
+    setNotice(`${userById(ride.driverId, appUsers).firstName}'s driver dashboard now shows this booking.`)
     setCheckoutRide(null)
     setActiveTab("trips")
   }
 
   function createRideListing(draft: ListingDraft) {
-    const vehicle = vehicles.find((item) => item.ownerId === currentUserId) ?? vehicles[0]
+    const vehicle = appVehicles.find((item) => item.ownerId === activeUserId) ?? appVehicles[0] ?? seedVehicles[0]
     const ride: Ride = {
       id: `ride-${Date.now()}`,
-      driverId: currentUserId,
+      driverId: activeUserId,
       vehicleId: vehicle.id,
       origin: draft.origin,
       destination: draft.destination,
@@ -217,13 +359,30 @@ export default function ShotgunWebApp() {
     }
 
     setRides((current) => [ride, ...current])
-    setDriverViewUserId(currentUserId)
+    setDriverViewUserId(activeUserId)
     setSelectedRideId(ride.id)
     setNotice("Your new listing is live in demo mode.")
     setActiveTab("drive")
   }
 
-  function acceptBooking(bookingId: string) {
+  async function acceptBooking(bookingId: string) {
+    const booking = bookings.find((item) => item.id === bookingId)
+    const ride = booking ? rides.find((item) => item.id === booking.rideId) : undefined
+
+    if (booking && ride && liveBackendActive() && ride.driverId === activeUserId) {
+      setPendingAction("approve")
+      try {
+        await approveBookingWithSupabase({ bookingID: bookingId })
+        await refreshLiveData()
+        setNotice("Booking approved and demo payment captured.")
+      } catch (error) {
+        setNotice(mutationMessage(error, "Booking could not be approved."))
+      } finally {
+        setPendingAction(null)
+      }
+      return
+    }
+
     setBookings((current) =>
       current.map((booking) =>
         booking.id === bookingId
@@ -239,11 +398,30 @@ export default function ShotgunWebApp() {
           : booking,
       ),
     )
+    if (booking && ride && liveBackendActive() && ride.driverId !== activeUserId) {
+      setNotice("Driver handoff preview updated locally. Sign in as the driver to approve in Supabase.")
+    }
   }
 
-  function cancelBooking(bookingId: string) {
+  async function cancelBooking(bookingId: string) {
     const booking = bookings.find((item) => item.id === bookingId)
     if (!booking) return
+    const ride = rides.find((item) => item.id === booking.rideId)
+
+    if (ride && liveBackendActive() && (booking.riderId === activeUserId || ride.driverId === activeUserId)) {
+      setPendingAction("cancel")
+      try {
+        await cancelBookingWithSupabase({ bookingID: bookingId, reason: "Canceled from web app." })
+        await refreshLiveData()
+        setNotice("Booking canceled and seats restored.")
+      } catch (error) {
+        setNotice(mutationMessage(error, "Booking could not be canceled."))
+      } finally {
+        setPendingAction(null)
+      }
+      return
+    }
+
     setBookings((current) =>
       current.map((item) =>
         item.id === bookingId
@@ -266,6 +444,30 @@ export default function ShotgunWebApp() {
           : ride,
       ),
     )
+    if (ride && liveBackendActive() && booking.riderId !== activeUserId && ride.driverId !== activeUserId) {
+      setNotice("Driver handoff preview updated locally. Sign in as that driver to cancel in Supabase.")
+    }
+  }
+
+  async function declineBooking(bookingId: string) {
+    const booking = bookings.find((item) => item.id === bookingId)
+    const ride = booking ? rides.find((item) => item.id === booking.rideId) : undefined
+
+    if (booking && ride && liveBackendActive() && ride.driverId === activeUserId) {
+      setPendingAction("decline")
+      try {
+        await declineBookingWithSupabase({ bookingID: bookingId, reason: "Declined from web app." })
+        await refreshLiveData()
+        setNotice("Booking declined and seats restored.")
+      } catch (error) {
+        setNotice(mutationMessage(error, "Booking could not be declined."))
+      } finally {
+        setPendingAction(null)
+      }
+      return
+    }
+
+    await cancelBooking(bookingId)
   }
 
   function completeBooking(bookingId: string) {
@@ -283,7 +485,7 @@ export default function ShotgunWebApp() {
     if (!booking || !ride || !body.trim()) return
     const review: Review = {
       id: `review-${bookingId}-${Date.now()}`,
-      authorId: currentUserId,
+      authorId: activeUserId,
       subjectId: ride.driverId,
       rating,
       body: body.trim(),
@@ -292,8 +494,23 @@ export default function ShotgunWebApp() {
     setNotice("Review posted.")
   }
 
-  function sendMessage(conversationId: string, body: string) {
+  async function sendMessage(conversationId: string, body: string) {
     if (!body.trim()) return
+    const conversation = conversations.find((item) => item.id === conversationId)
+
+    if (conversation && liveBackendActive() && conversation.participantIds.includes(activeUserId)) {
+      setPendingAction("message")
+      try {
+        await sendMessageWithSupabase({ conversationID: conversationId, body: body.trim() })
+        await refreshLiveData()
+      } catch (error) {
+        setNotice(mutationMessage(error, "Message could not be sent."))
+      } finally {
+        setPendingAction(null)
+      }
+      return
+    }
+
     setConversations((current) =>
       current.map((conversation) =>
         conversation.id === conversationId
@@ -303,7 +520,7 @@ export default function ShotgunWebApp() {
                 ...conversation.messages,
                 {
                   id: `message-${Date.now()}`,
-                  senderId: currentUserId,
+                  senderId: activeUserId,
                   body: body.trim(),
                   sentAt: "Now",
                 },
@@ -312,6 +529,9 @@ export default function ShotgunWebApp() {
           : conversation,
       ),
     )
+    if (conversation && liveBackendActive() && !conversation.participantIds.includes(activeUserId)) {
+      setNotice("Message added to the local handoff preview. Sign in as a participant to send it through Supabase.")
+    }
   }
 
   function cancelRide(rideId: string) {
@@ -364,7 +584,8 @@ export default function ShotgunWebApp() {
   }
 
   return (
-    <main className="appShell" data-theme={theme}>
+    <AppDataContext.Provider value={{ currentUserId: activeUserId, users: appUsers, vehicles: appVehicles }}>
+      <main className="appShell" data-theme={theme}>
       <aside className="sidebar" aria-label="Shotgun navigation">
         <div className="brandMark">
           <div className="brandIcon">
@@ -417,7 +638,15 @@ export default function ShotgunWebApp() {
           />
         )}
         {activeTab === "trips" && (
-          <TripsView bookings={bookings} rides={rides} reviews={reviews} onCancel={cancelBooking} onComplete={completeBooking} onReview={addReview} />
+          <TripsView
+            bookings={bookings}
+            isCanceling={pendingAction === "cancel"}
+            rides={rides}
+            reviews={reviews}
+            onCancel={cancelBooking}
+            onComplete={completeBooking}
+            onReview={addReview}
+          />
         )}
         {activeTab === "drive" && (
           <DriveView
@@ -429,11 +658,12 @@ export default function ShotgunWebApp() {
             onCancelRide={cancelRide}
             onCompleteRide={completeRide}
             onCreateRide={createRideListing}
-            onDecline={cancelBooking}
-            onShowMyDashboard={() => setDriverViewUserId(currentUserId)}
+            onDecline={declineBooking}
+            onShowMyDashboard={() => setDriverViewUserId(activeUserId)}
+            pendingAction={pendingAction}
           />
         )}
-        {activeTab === "inbox" && <InboxView conversations={conversations} rides={rides} onSendMessage={sendMessage} />}
+        {activeTab === "inbox" && <InboxView conversations={conversations} isSending={pendingAction === "message"} rides={rides} onSendMessage={sendMessage} />}
         {activeTab === "safety" && <SafetyView reports={reports} onReport={fileReport} />}
         {activeTab === "profile" && (
           <ProfileView
@@ -450,6 +680,7 @@ export default function ShotgunWebApp() {
         {activeTab === "settings" && (
           <SettingsView
             authMode={authMode}
+            backendStatus={backendStatus}
             notifications={notifications}
             onSignOut={signOut}
             setNotifications={setNotifications}
@@ -463,6 +694,7 @@ export default function ShotgunWebApp() {
             seats={bookingSeats}
             onClose={() => setCheckoutRide(null)}
             onConfirm={() => bookRide(checkoutRide)}
+            submitting={pendingAction === "book"}
           />
         )}
         {notice && (
@@ -472,7 +704,8 @@ export default function ShotgunWebApp() {
           </button>
         )}
       </section>
-    </main>
+      </main>
+    </AppDataContext.Provider>
   )
 }
 
@@ -634,8 +867,9 @@ function RideCard({
   onSelect: () => void
   onSave: () => void
 }) {
-  const driver = userById(ride.driverId)
-  const vehicle = vehicleById(ride.vehicleId)
+  const { users, vehicles } = useAppData()
+  const driver = userById(ride.driverId, users)
+  const vehicle = vehicleById(ride.vehicleId, vehicles)
 
   return (
     <article className={`rideCard ${selected ? "selected" : ""}`}>
@@ -675,8 +909,9 @@ function RideDetail({
   onBook: (ride: Ride) => void
   onOpenSafety: () => void
 }) {
-  const driver = userById(ride.driverId)
-  const vehicle = vehicleById(ride.vehicleId)
+  const { users, vehicles } = useAppData()
+  const driver = userById(ride.driverId, users)
+  const vehicle = vehicleById(ride.vehicleId, vehicles)
 
   return (
     <aside className="detailPanel">
@@ -743,13 +978,16 @@ function CheckoutSheet({
   seats,
   onClose,
   onConfirm,
+  submitting,
 }: {
   ride: Ride
   seats: number
   onClose: () => void
-  onConfirm: () => void
+  onConfirm: () => MaybeAsync
+  submitting: boolean
 }) {
-  const driver = userById(ride.driverId)
+  const { users } = useAppData()
+  const driver = userById(ride.driverId, users)
   const subtotal = ride.price * seats
   const fee = serviceFee(subtotal)
   const total = subtotal + fee
@@ -788,9 +1026,9 @@ function CheckoutSheet({
             <span>Stripe Connect or Apple Pay will capture this server-side later.</span>
           </div>
         </div>
-        <button className="primaryAction" type="button" onClick={onConfirm}>
+        <button className="primaryAction" type="button" onClick={onConfirm} disabled={submitting}>
           <Receipt size={18} />
-          {ride.manualApproval ? "Authorize payment and request" : "Pay and book"}
+          {submitting ? "Booking..." : ride.manualApproval ? "Authorize payment and request" : "Pay and book"}
         </button>
       </section>
     </div>
@@ -799,6 +1037,7 @@ function CheckoutSheet({
 
 function TripsView({
   bookings,
+  isCanceling,
   rides,
   reviews,
   onCancel,
@@ -806,12 +1045,14 @@ function TripsView({
   onReview,
 }: {
   bookings: Booking[]
+  isCanceling: boolean
   rides: Ride[]
   reviews: Review[]
-  onCancel: (id: string) => void
+  onCancel: (id: string) => MaybeAsync
   onComplete: (id: string) => void
   onReview: (bookingId: string, rating: number, body: string) => void
 }) {
+  const { currentUserId, users } = useAppData()
   const userBookings = bookings.filter((booking) => booking.riderId === currentUserId)
   return (
     <section className="contentStack">
@@ -823,7 +1064,7 @@ function TripsView({
           {userBookings.map((booking) => {
             const ride = rides.find((item) => item.id === booking.rideId)
             if (!ride) return null
-            const driver = userById(ride.driverId)
+            const driver = userById(ride.driverId, users)
             const reviewed = reviews.some((review) => review.authorId === currentUserId && review.id.includes(booking.id))
             return (
               <article className="tripCard" key={booking.id}>
@@ -840,8 +1081,8 @@ function TripsView({
                 </div>
                 {booking.status === "pending" || booking.status === "confirmed" ? (
                   <div className="actionRow">
-                    <button className="secondaryAction" type="button" onClick={() => onCancel(booking.id)}>
-                      <X size={16} /> Cancel booking
+                    <button className="secondaryAction" type="button" onClick={() => onCancel(booking.id)} disabled={isCanceling}>
+                      <X size={16} /> {isCanceling ? "Canceling" : "Cancel booking"}
                     </button>
                     {booking.status === "confirmed" && (
                       <button className="primaryAction compact" type="button" onClick={() => onComplete(booking.id)}>
@@ -905,19 +1146,22 @@ function DriveView({
   onCreateRide,
   onDecline,
   onShowMyDashboard,
+  pendingAction,
 }: {
   bookings: Booking[]
   rides: Ride[]
   driverUserId: string
-  onAccept: (id: string) => void
+  onAccept: (id: string) => MaybeAsync
   onAdjustPrice: (rideId: string, amount: number) => void
   onCancelRide: (rideId: string) => void
   onCompleteRide: (rideId: string) => void
   onCreateRide: (draft: ListingDraft) => void
-  onDecline: (id: string) => void
+  onDecline: (id: string) => MaybeAsync
   onShowMyDashboard: () => void
+  pendingAction: PendingAction
 }) {
-  const driver = userById(driverUserId)
+  const { currentUserId, users, vehicles } = useAppData()
+  const driver = userById(driverUserId, users)
   const ownRides = rides.filter((ride) => ride.driverId === driverUserId)
   const driverBookings = bookings.filter((booking) => ownRides.some((ride) => ride.id === booking.rideId))
   const expected = driverBookings.reduce((total, booking) => {
@@ -954,7 +1198,7 @@ function DriveView({
             <p>{ride.departureTime} · {ride.seatsAvailable}/{ride.totalSeats} open · ${ride.price}/seat</p>
             <div className="paymentLine">
               <Car size={16} />
-              <span>{vehicleById(ride.vehicleId).color} {vehicleById(ride.vehicleId).make} {vehicleById(ride.vehicleId).model}</span>
+              <span>{vehicleById(ride.vehicleId, vehicles).color} {vehicleById(ride.vehicleId, vehicles).make} {vehicleById(ride.vehicleId, vehicles).model}</span>
             </div>
             {driverUserId === currentUserId && ride.status === "active" && (
               <div className="actionRow">
@@ -981,7 +1225,7 @@ function DriveView({
           {driverBookings.map((booking) => {
           const ride = rides.find((item) => item.id === booking.rideId)
           if (!ride) return null
-          const rider = userById(booking.riderId)
+          const rider = userById(booking.riderId, users)
           return (
             <article className="tripCard" key={booking.id}>
               <Status status={booking.status} />
@@ -996,11 +1240,11 @@ function DriveView({
               </div>
               {booking.status === "pending" && (
                 <div className="actionRow">
-                  <button className="secondaryAction" type="button" onClick={() => onDecline(booking.id)}>
-                    <X size={16} /> Decline
+                  <button className="secondaryAction" type="button" onClick={() => onDecline(booking.id)} disabled={pendingAction === "decline" || pendingAction === "cancel"}>
+                    <X size={16} /> {pendingAction === "decline" || pendingAction === "cancel" ? "Declining" : "Decline"}
                   </button>
-                  <button className="primaryAction compact" type="button" onClick={() => onAccept(booking.id)}>
-                    <Check size={16} /> Accept
+                  <button className="primaryAction compact" type="button" onClick={() => onAccept(booking.id)} disabled={pendingAction === "approve"}>
+                    <Check size={16} /> {pendingAction === "approve" ? "Accepting" : "Accept"}
                   </button>
                 </div>
               )}
@@ -1127,13 +1371,16 @@ function CreateRideForm({ onCreateRide }: { onCreateRide: (draft: ListingDraft) 
 
 function InboxView({
   conversations,
+  isSending,
   rides,
   onSendMessage,
 }: {
   conversations: Conversation[]
+  isSending: boolean
   rides: Ride[]
-  onSendMessage: (conversationId: string, body: string) => void
+  onSendMessage: (conversationId: string, body: string) => MaybeAsync
 }) {
+  const { currentUserId, users } = useAppData()
   const [selectedId, setSelectedId] = useState(conversations[0]?.id ?? "")
   const [draft, setDraft] = useState("On my way. What is the easiest pickup landmark?")
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? conversations[0]
@@ -1145,7 +1392,7 @@ function InboxView({
         {conversations.map((conversation) => {
           const ride = rides.find((item) => item.id === conversation.rideId)
           const otherId = conversation.participantIds.find((id) => id !== currentUserId) ?? currentUserId
-          const other = userById(otherId)
+          const other = userById(otherId, users)
           return (
             <button
               className={`conversationButton ${conversation.id === selected?.id ? "active" : ""}`}
@@ -1181,12 +1428,13 @@ function InboxView({
               className="composer"
               onSubmit={(event) => {
                 event.preventDefault()
-                onSendMessage(selected.id, draft)
+                const sentBody = draft
                 setDraft("")
+                void onSendMessage(selected.id, sentBody)
               }}
             >
-              <input aria-label="Message" value={draft} onChange={(event) => setDraft(event.target.value)} />
-              <button type="submit"><Send size={16} /> Send</button>
+              <input aria-label="Message" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={isSending} />
+              <button type="submit" disabled={isSending}><Send size={16} /> {isSending ? "Sending" : "Send"}</button>
             </form>
           </>
         ) : (
@@ -1216,7 +1464,8 @@ function ProfileView({
   theme: ThemeChoice
   setTheme: (value: ThemeChoice) => void
 }) {
-  const user = userById(currentUserId)
+  const { currentUserId, users } = useAppData()
+  const user = userById(currentUserId, users)
   const userReviews = reviews.filter((review) => review.subjectId === user.id)
   return (
     <section className="contentStack">
@@ -1319,6 +1568,7 @@ function SafetyView({ reports, onReport }: { reports: string[]; onReport: (summa
 
 function SettingsView({
   authMode,
+  backendStatus,
   notifications,
   onSignOut,
   setNotifications,
@@ -1326,6 +1576,7 @@ function SettingsView({
   theme,
 }: {
   authMode: "apple" | "demo"
+  backendStatus: BackendStatus
   notifications: boolean
   onSignOut: () => void
   setNotifications: (value: boolean) => void
@@ -1351,7 +1602,7 @@ function SettingsView({
         <div className="integrationCard">
           <BadgeCheck size={20} />
           <strong>Supabase</strong>
-          <span>Client env hook is ready. Auth, RLS, and realtime can be connected next.</span>
+          <span>{backendStatus.message}</span>
         </div>
         <button className="toggleRow danger" type="button" onClick={onSignOut}>
           <X size={18} />
@@ -1453,7 +1704,8 @@ function InfoRow({ icon: Icon, title, body }: { icon: ElementType; title: string
 }
 
 function Avatar({ userId, large = false }: { userId: string; large?: boolean }) {
-  const user = userById(userId)
+  const { users } = useAppData()
+  const user = userById(userId, users)
   return <div className={`avatar ${large ? "large" : ""}`}>{user.symbol}</div>
 }
 
@@ -1489,12 +1741,12 @@ function CorridorMap({ origin, destination }: { origin: string; destination: str
   )
 }
 
-function userById(id: string) {
-  return users.find((user) => user.id === id) ?? users[0]
+function userById(id: string, sourceUsers = seedUsers) {
+  return sourceUsers.find((user) => user.id === id) ?? sourceUsers[0] ?? seedUsers[0]
 }
 
-function vehicleById(id: string) {
-  return vehicles.find((vehicle) => vehicle.id === id) ?? vehicles[0]
+function vehicleById(id: string, sourceVehicles = seedVehicles) {
+  return sourceVehicles.find((vehicle) => vehicle.id === id) ?? sourceVehicles[0] ?? seedVehicles[0]
 }
 
 function shortCity(city: string) {

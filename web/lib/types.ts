@@ -1,6 +1,6 @@
 export type RideStatus = "active" | "sold out" | "canceled" | "completed"
 export type BookingStatus = "pending" | "confirmed" | "canceled" | "completed"
-export type PaymentStatus = "authorized" | "succeeded" | "refunded" | "voided"
+export type PaymentStatus = "pending" | "authorized" | "succeeded" | "failed" | "refunded" | "voided"
 
 export type AppUser = {
   id: string
@@ -81,4 +81,3 @@ export type Review = {
   rating: number
   body: string
 }
-
